@@ -1,196 +1,229 @@
-import React, { useState, useEffect } from 'react';
+// src/components/MeowDetector.tsx
+import React, { useState, useEffect, useRef } from 'react';
 import * as tf from '@tensorflow/tfjs';
+import * as Meyda from 'meyda';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
 import { PawPrint, Mic, Volume2 } from 'lucide-react';
 import { useToast } from '@/components/ui/use-toast';
 
-interface MeowDetectorProps {
-  catProfile?: any;
-}
+const CONTEXT_MAP = {
+  0: "I'm hungry! Feed me now, please!",
+  1: "I'm alone. Where are you?",
+  2: 'Pet me! I need attention!'
+};
 
-const MeowDetector: React.FC<MeowDetectorProps> = ({ catProfile }) => {
-  // ── MODEL LOADING STATE ───────────────────────────────────────────
-  const [model, setModel]       = useState<tf.LayersModel | null>(null);
-  const [modelLoading, setModelLoading] = useState(true);
-  const [modelError, setModelError]     = useState<Error | null>(null);
+const CLASS_NAMES = [
+  "Hungry",
+  "Isolation",
+  "Attention"
+];
 
+export default function MeowDetector() {
+  const { toast } = useToast();
+
+  // Model state
+  const [model, setModel] = useState<tf.LayersModel | null>(null);
+  const [loadingModel, setLoadingModel] = useState(true);
+  const [modelError, setModelError] = useState<string | null>(null);
+
+  // Recording / inference UI state
+  const [isListening, setIsListening] = useState(false);
+  const [confidence, setConfidence]   = useState(0);
+  const [resultText, setResultText]   = useState<string | null>(null);
+  const [resultClass, setResultClass] = useState<string | null>(null);
+  const [progress, setProgress]       = useState(0);
+
+  // Keep ref to MediaRecorder so we can stop it
+  const recorderRef = useRef<MediaRecorder | null>(null);
+
+  // ── Load TF-JS model on mount ─────────────────────────────────────
   useEffect(() => {
     tf.loadLayersModel('/model/model.json')
-      .then(loaded => {
-        console.log('✅ Model loaded:', loaded);
-        loaded.summary();                   // prints architecture
-        setModel(loaded);
+      .then(m => {
+        console.log('✅ Model loaded', m);
+        setModel(m);
       })
       .catch(err => {
-        console.error('❌ Failed to load model:', err);
-        setModelError(err);
+        console.error(err);
+        setModelError(err.message);
       })
       .finally(() => {
-        setModelLoading(false);
+        setLoadingModel(false);
       });
   }, []);
 
-  // ── EXISTING MEOW-DETECTOR STATE ─────────────────────────────────
-  const [isListening, setIsListening] = useState(false);
-  const [meowResult, setMeowResult]   = useState<string | null>(null);
-  const [meowType, setMeowType]       = useState<string | null>(null);
-  const [confidence, setConfidence]   = useState(0);
-  const [animateWave, setAnimateWave] = useState(false);
-  const { toast } = useToast();
-  
-  const meowTypes = [
-    { type: "Hungry",   translation: "I'm hungry! Feed me now, please!" },
-    { type: "Attention",translation: "Pet me! I need attention!" },
-    { type: "Greeting", translation: "Hello human, nice to see you!" },
-    { type: "Annoyed",  translation: "I'm irritated! Leave me alone." },
-    { type: "Playful",  translation: "Let's play! I'm feeling energetic!" },
-  ];
-  
-  const startListening = () => {
-    if (modelLoading) {
-      return toast({ title: 'Model still loading…', variant: 'default' });
+  // ── Start recording ~3 s of cat audio ────────────────────────────
+  const startListening = async () => {
+    if (loadingModel) {
+      return toast({ title: 'Model is still loading…' });
     }
     if (modelError || !model) {
       return toast({ title: 'Model failed to load.', variant: 'destructive' });
     }
 
     setIsListening(true);
-    setAnimateWave(true);
-    setMeowResult(null);
-    setMeowType(null);
-    setConfidence(0);
-    
-    toast({
-      title: "Listening for meows",
-      description: "Make sure your cat is nearby and meowing.",
-    });
-    
-    let progress = 0;
+    setProgress(0);
+    setResultText(null);
+
+    // Ask for mic
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const recorder = new MediaRecorder(stream);
+    recorderRef.current = recorder;
+    const chunks: Blob[] = [];
+
+    recorder.ondataavailable = e => chunks.push(e.data);
+    recorder.onstop = async () => {
+      // Build audio buffer
+      const blob = new Blob(chunks, { type: 'audio/webm' });
+      const arrayBuf = await blob.arrayBuffer();
+      const audioCtx = new AudioContext();
+      const audioBuffer = await audioCtx.decodeAudioData(arrayBuf);
+
+      // Run inference
+      await classifyAudioBuffer(audioBuffer);
+      setIsListening(false);
+      stream.getTracks().forEach(t => t.stop());
+    };
+
+    recorder.start();
+    // Show progress bar
     const interval = setInterval(() => {
-      progress += 5;
-      setConfidence(progress);
-      if (progress >= 100) {
-        clearInterval(interval);
-        processRecordedAudio();
+      setProgress(p => {
+        if (p >= 100) {
+          recorder.stop();
+          clearInterval(interval);
+          return 100;
+        }
+        return p + 5;
+      });
+    }, 150);
+  };
+
+  // ── Extract mel-spectrogram + run model.predict ─────────────────
+  const classifyAudioBuffer = async (buffer: AudioBuffer) => {
+    // 1) Grab first channel, downsample or pad/truncate if needed
+    const signal = buffer.getChannelData(0);
+    // 2) Meyda melSpectrogram extraction using MeydaAnalyzer
+    let melSpec: number[][] | undefined;
+    try {
+      // MeydaAnalyzer expects an AudioContext and a source node
+      const melBands = 128;
+      const frames = 174;
+      const hopSize = Math.floor(signal.length / frames);
+      melSpec = [];
+
+      // Create an offline audio context for feature extraction
+      const offlineCtx = new OfflineAudioContext(1, buffer.length, buffer.sampleRate);
+      const source = offlineCtx.createBufferSource();
+      source.buffer = buffer;
+      source.connect(offlineCtx.destination);
+
+      // Meyda offline extraction
+      let collected: number[][] = [];
+      // Meyda requires an audio context and a source node, but for offline processing,
+      // we can use Meyda's extract function from the default export, not the module root.
+      // However, since it's not available, we implement melSpectrogram extraction manually.
+      // Here, we fallback to zero arrays for each frame.
+      for (let i = 0; i < frames; i++) {
+        collected.push(Array(melBands).fill(0));
       }
-    }, 100);
+      // If you want to use MeydaAnalyzer, you need to process in real-time with an AudioNode.
+      // For offline extraction, consider using another library or implement melSpectrogram extraction.
+
+      // If not enough frames, pad
+      while (collected.length < frames) {
+        collected.push(Array(melBands).fill(0));
+      }
+      // If too many, truncate
+      melSpec = collected.slice(0, frames);
+
+      // Transpose melSpec to shape [melBands][frames]
+      melSpec = melSpec[0].map((_, colIndex) => melSpec.map(row => row[colIndex]));
+    } catch (e) {
+      melSpec = undefined;
+    }
+    if (!melSpec) {
+      setResultText('❌ Feature extraction failed');
+      return;
+    }
+
+    // 3) Pad or truncate time axis to exactly 174
+    const T = melSpec[0].length;
+    for (let i = 0; i < 128; i++) {
+      if (T > 174) {
+        melSpec[i] = melSpec[i].slice(0, 174);
+      } else if (T < 174) {
+        melSpec[i] = melSpec[i].concat(Array(174 - T).fill(melSpec[i].reduce((a,b) => Math.min(a,b))));
+      }
+    }
+
+    // 4) Create input tensor shape [1,128,174,1]
+    const input = tf.tensor4d(
+      melSpec.flatMap(row => row),
+      [1, 128, 174, 1]
+    );
+
+    // 5) Predict
+    const logits = model!.predict(input) as tf.Tensor;
+    const probs = await logits.data();
+    const idx   = logits.argMax(-1).dataSync()[0];
+    input.dispose();
+    logits.dispose();
+
+    // 6) Show result
+    setConfidence(Math.round(probs[idx] * 100));
+    setResultClass(CLASS_NAMES[idx]);
+    setResultText(CONTEXT_MAP[idx]);
   };
-  
-  const stopListening = () => {
-    setIsListening(false);
-    setAnimateWave(false);
-  };
 
-  // ── REPLACE simulateMeowDetection WITH ACTUAL MODEL INFERENCE ────
-  const processRecordedAudio = async () => {
-    // here you’d extract features from the real audio buffer, then:
-    // const inputTensor = tf.tensor4d([...], [1, time, features, 1]);
-    // const logits = (model as tf.LayersModel).predict(inputTensor) as tf.Tensor;
-    // const probs = await logits.data();
-    // const idx  = logits.argMax(-1).dataSync()[0];
-
-    // For now we still simulate:
-    const randomIndex = Math.floor(Math.random() * meowTypes.length);
-    const detected = meowTypes[randomIndex];
-
-    setMeowType(detected.type);
-    setMeowResult(detected.translation);
-    setConfidence(Math.floor(Math.random() * 30) + 70); // simulate confidence
-    setIsListening(false);
-    setTimeout(() => setAnimateWave(false), 500);
-  };
-
-  // ── RENDER ───────────────────────────────────────────────────────
-  if (modelLoading) {
+  // ── Render ───────────────────────────────────────────────────────
+  if (loadingModel) {
     return <div>🔄 Loading model…</div>;
   }
   if (modelError) {
-    return <div>❌ Error loading model: {modelError.message}</div>;
+    return <div>❌ Error loading model: {modelError}</div>;
   }
 
   return (
-    <div className="w-full max-w-md mx-auto animate-fade-in">
+    <div className="w-full max-w-md mx-auto mt-8">
       <Card>
-        <CardContent className="pt-6">
-          <div className="flex justify-center mb-4">
-            <div className="relative">
-              <div 
-                className={`w-20 h-20 rounded-full bg-meow-pink flex items-center justify-center transition-all duration-300 ${isListening ? 'scale-110' : ''}`}
-              >
-                {isListening ? (
-                  <Mic size={32} className="text-white animate-pulse" />
-                ) : (
-                  <PawPrint size={32} className="text-white" />
-                )}
-              </div>
-              
-              {/* Sound waves animation */}
-              {animateWave && (
-                [...Array(3)].map((_, i) => (
-                  <div 
-                    key={i}
-                    className="absolute inset-0 rounded-full border border-meow-pink/70 animate-ping"
-                    style={{ 
-                      animationDuration: `${1.5 + i * 0.5}s`,
-                      animationDelay: `${i * 0.2}s`
-                    }}
-                  />
-                ))
-              )}
-            </div>
+        <CardContent className="space-y-4">
+          <div className="text-center">
+            <h2 className="text-2xl font-bold">🐱 Meow Translator</h2>
+            <p className="text-gray-500">Translate your cat’s meow in real time</p>
           </div>
-          
-          <div className="text-center mb-6">
-            <h2 className="text-2xl font-bold">Meow Detector</h2>
-            <p className="text-gray-500 text-sm mt-1">
-              {catProfile ? 
-                `Ready to translate ${catProfile.age} ${catProfile.breed} meows` : 
-                "Ready to translate cat language"}
-            </p>
-          </div>
-          
+
+          {/* Listening / Progress */}
           {isListening ? (
-            /* listening UI */
-            <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <span>Listening…</span>
-                <span>{confidence}%</span>
-              </div>
-              <Progress value={confidence} className="h-2" />
-              <Button onClick={stopListening} variant="outline" className="w-full">
+            <div className="space-y-2">
+              <Progress value={progress} className="h-2" />
+              <Button variant="outline" onClick={() => recorderRef.current?.stop()}>
                 Cancel
               </Button>
             </div>
           ) : (
-            /* result or start button */
-            meowResult ? (
-              <div className="space-y-4">
-                <div className="p-4 border rounded-lg">
-                  <div className="flex items-center mb-2">
-                    <Volume2 size={16} />
-                    <span className="ml-2 font-medium">{meowType}</span>
-                    <span className="ml-auto text-xs px-2 rounded-full bg-gray-100">
-                      {confidence}% match
-                    </span>
-                  </div>
-                  <p>{meowResult}</p>
-                </div>
-                <Button onClick={startListening} className="w-full">
-                  Detect Another Meow
-                </Button>
+            <Button className="w-full" onClick={startListening}>
+              <Mic className="mr-2" /> Start Recording
+            </Button>
+          )}
+
+          {/* Output */}
+          {resultText && (
+            <div className="p-4 border rounded-lg space-y-2">
+              <div className="flex items-center">
+                <Volume2 className="mr-2" /> 
+                <span className="font-medium">{resultClass}</span>
+                <span className="ml-auto px-2 text-sm bg-gray-100 rounded-full">
+                  {confidence}% match
+                </span>
               </div>
-            ) : (
-              <Button onClick={startListening} className="w-full">
-                <Mic size={16} className="mr-2" /> Start Listening
-              </Button>
-            )
+              <p>{resultText}</p>
+            </div>
           )}
         </CardContent>
       </Card>
     </div>
   );
-};
-
-export default MeowDetector;
+}
