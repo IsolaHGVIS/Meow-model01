@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import * as tf from '@tensorflow/tfjs';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
@@ -10,44 +11,69 @@ interface MeowDetectorProps {
 }
 
 const MeowDetector: React.FC<MeowDetectorProps> = ({ catProfile }) => {
+  // ── MODEL LOADING STATE ───────────────────────────────────────────
+  const [model, setModel]       = useState<tf.LayersModel | null>(null);
+  const [modelLoading, setModelLoading] = useState(true);
+  const [modelError, setModelError]     = useState<Error | null>(null);
+
+  useEffect(() => {
+    tf.loadLayersModel('/model/model.json')
+      .then(loaded => {
+        console.log('✅ Model loaded:', loaded);
+        loaded.summary();                   // prints architecture
+        setModel(loaded);
+      })
+      .catch(err => {
+        console.error('❌ Failed to load model:', err);
+        setModelError(err);
+      })
+      .finally(() => {
+        setModelLoading(false);
+      });
+  }, []);
+
+  // ── EXISTING MEOW-DETECTOR STATE ─────────────────────────────────
   const [isListening, setIsListening] = useState(false);
-  const [meowResult, setMeowResult] = useState<string | null>(null);
-  const [meowType, setMeowType] = useState<string | null>(null);
-  const [confidence, setConfidence] = useState(0);
+  const [meowResult, setMeowResult]   = useState<string | null>(null);
+  const [meowType, setMeowType]       = useState<string | null>(null);
+  const [confidence, setConfidence]   = useState(0);
   const [animateWave, setAnimateWave] = useState(false);
   const { toast } = useToast();
   
   const meowTypes = [
-    { type: "Hungry", translation: "I'm hungry! Feed me now, please!", probability: 0.8 },
-    { type: "Attention", translation: "Pet me! I need attention!", probability: 0.7 },
-    { type: "Greeting", translation: "Hello human, nice to see you!", probability: 0.9 },
-    { type: "Annoyed", translation: "I'm irritated! Leave me alone.", probability: 0.6 },
-    { type: "Playful", translation: "Let's play! I'm feeling energetic!", probability: 0.85 },
+    { type: "Hungry",   translation: "I'm hungry! Feed me now, please!" },
+    { type: "Attention",translation: "Pet me! I need attention!" },
+    { type: "Greeting", translation: "Hello human, nice to see you!" },
+    { type: "Annoyed",  translation: "I'm irritated! Leave me alone." },
+    { type: "Playful",  translation: "Let's play! I'm feeling energetic!" },
   ];
   
   const startListening = () => {
-    // In a real app, this would access the microphone
+    if (modelLoading) {
+      return toast({ title: 'Model still loading…', variant: 'default' });
+    }
+    if (modelError || !model) {
+      return toast({ title: 'Model failed to load.', variant: 'destructive' });
+    }
+
     setIsListening(true);
     setAnimateWave(true);
     setMeowResult(null);
     setMeowType(null);
     setConfidence(0);
     
-    // Show toast notification
     toast({
       title: "Listening for meows",
       description: "Make sure your cat is nearby and meowing.",
     });
     
-    // Simulate recording and processing
     let progress = 0;
     const interval = setInterval(() => {
       progress += 5;
       setConfidence(progress);
-      
       if (progress >= 100) {
         clearInterval(interval);
-        simulateMeowDetection();
+        processRecordedAudio();
       }
     }, 100);
   };
@@ -56,23 +82,33 @@ const MeowDetector: React.FC<MeowDetectorProps> = ({ catProfile }) => {
     setIsListening(false);
     setAnimateWave(false);
   };
-  
-  const simulateMeowDetection = () => {
-    // In a real app, this would process actual audio
-    // For demo, we'll randomly select a meow type
+
+  // ── REPLACE simulateMeowDetection WITH ACTUAL MODEL INFERENCE ────
+  const processRecordedAudio = async () => {
+    // here you’d extract features from the real audio buffer, then:
+    // const inputTensor = tf.tensor4d([...], [1, time, features, 1]);
+    // const logits = (model as tf.LayersModel).predict(inputTensor) as tf.Tensor;
+    // const probs = await logits.data();
+    // const idx  = logits.argMax(-1).dataSync()[0];
+
+    // For now we still simulate:
     const randomIndex = Math.floor(Math.random() * meowTypes.length);
-    const detectedMeow = meowTypes[randomIndex];
-    
-    setMeowType(detectedMeow.type);
-    setMeowResult(detectedMeow.translation);
-    setConfidence(Math.floor(detectedMeow.probability * 100));
+    const detected = meowTypes[randomIndex];
+
+    setMeowType(detected.type);
+    setMeowResult(detected.translation);
+    setConfidence(Math.floor(Math.random() * 30) + 70); // simulate confidence
     setIsListening(false);
-    
-    // Keep the wave animation for a bit longer
-    setTimeout(() => {
-      setAnimateWave(false);
-    }, 1000);
+    setTimeout(() => setAnimateWave(false), 500);
   };
+
+  // ── RENDER ───────────────────────────────────────────────────────
+  if (modelLoading) {
+    return <div>🔄 Loading model…</div>;
+  }
+  if (modelError) {
+    return <div>❌ Error loading model: {modelError.message}</div>;
+  }
 
   return (
     <div className="w-full max-w-md mx-auto animate-fade-in">
@@ -116,58 +152,41 @@ const MeowDetector: React.FC<MeowDetectorProps> = ({ catProfile }) => {
           </div>
           
           {isListening ? (
+            /* listening UI */
             <div className="space-y-4">
               <div className="flex items-center justify-between">
-                <span className="text-sm text-gray-500">Listening...</span>
-                <span className="text-sm font-medium">{confidence}%</span>
+                <span>Listening…</span>
+                <span>{confidence}%</span>
               </div>
               <Progress value={confidence} className="h-2" />
-              
-              <Button 
-                onClick={stopListening}
-                variant="outline" 
-                className="w-full mt-4 border-meow-pink text-meow-pink hover:bg-meow-pink/10"
-              >
+              <Button onClick={stopListening} variant="outline" className="w-full">
                 Cancel
               </Button>
             </div>
           ) : (
-            <div>
-              {meowResult ? (
-                <div className="space-y-4 animate-fade-in">
-                  <div className="bg-meow-peach/20 rounded-lg p-4 border border-meow-peach">
-                    <div className="flex items-center mb-2">
-                      <Volume2 size={16} className="text-meow-navy mr-2" />
-                      <span className="font-medium text-meow-navy">{meowType} Meow</span>
-                      <span className="ml-auto text-xs bg-meow-navy/10 px-2 py-0.5 rounded-full">
-                        {confidence}% match
-                      </span>
-                    </div>
-                    <p className="text-lg">{meowResult}</p>
+            /* result or start button */
+            meowResult ? (
+              <div className="space-y-4">
+                <div className="p-4 border rounded-lg">
+                  <div className="flex items-center mb-2">
+                    <Volume2 size={16} />
+                    <span className="ml-2 font-medium">{meowType}</span>
+                    <span className="ml-auto text-xs px-2 rounded-full bg-gray-100">
+                      {confidence}% match
+                    </span>
                   </div>
-                  
-                  <Button 
-                    onClick={startListening} 
-                    className="w-full bg-meow-pink hover:bg-meow-pink/90 text-white"
-                  >
-                    Detect Another Meow
-                  </Button>
+                  <p>{meowResult}</p>
                 </div>
-              ) : (
-                <Button 
-                  onClick={startListening} 
-                  className="w-full bg-meow-pink hover:bg-meow-pink/90 text-white"
-                >
-                  <Mic size={16} className="mr-2" />
-                  Start Listening
+                <Button onClick={startListening} className="w-full">
+                  Detect Another Meow
                 </Button>
-              )}
-            </div>
+              </div>
+            ) : (
+              <Button onClick={startListening} className="w-full">
+                <Mic size={16} className="mr-2" /> Start Listening
+              </Button>
+            )
           )}
-          
-          <div className="mt-6 text-center text-xs text-gray-500">
-            <p>Position your device near your cat while they are vocalizing</p>
-          </div>
         </CardContent>
       </Card>
     </div>
