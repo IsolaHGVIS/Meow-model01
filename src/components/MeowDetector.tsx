@@ -1,14 +1,14 @@
 // src/components/MeowDetector.tsx
-import React, { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import * as tf from '@tensorflow/tfjs';
-import * as Meyda from 'meyda';
+import FFT from 'fft.js';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
-import { PawPrint, Mic, Volume2 } from 'lucide-react';
+import { Mic, Volume2 } from 'lucide-react';
 import { useToast } from '@/components/ui/use-toast';
 
-const CONTEXT_MAP = {
+const CONTEXT_MAP: Record<number, string> = {
   0: "I'm hungry! Feed me now, please!",
   1: "I'm alone. Where are you?",
   2: 'Pet me! I need attention!'
@@ -23,51 +23,43 @@ const CLASS_NAMES = [
 export default function MeowDetector() {
   const { toast } = useToast();
 
-  // Model state
+  // ── مدل TF-JS ─────────────────────────────────────────
   const [model, setModel] = useState<tf.LayersModel | null>(null);
   const [loadingModel, setLoadingModel] = useState(true);
   const [modelError, setModelError] = useState<string | null>(null);
 
-  // Recording / inference UI state
+  // ── UI State ───────────────────────────────────────────
   const [isListening, setIsListening] = useState(false);
-  const [confidence, setConfidence]   = useState(0);
-  const [resultText, setResultText]   = useState<string | null>(null);
+  const [progress, setProgress]     = useState(0);
+  const [confidence, setConfidence] = useState(0);
   const [resultClass, setResultClass] = useState<string | null>(null);
-  const [progress, setProgress]       = useState(0);
+  const [resultText, setResultText]   = useState<string | null>(null);
 
-  // Keep ref to MediaRecorder so we can stop it
-  const recorderRef = useRef<MediaRecorder | null>(null);
+  const recorderRef = useRef<MediaRecorder>();
 
-  // ── Load TF-JS model on mount ─────────────────────────────────────
+  // ── بارگذاری مدل در هنگام mount ────────────────────────
   useEffect(() => {
     tf.loadLayersModel('/model/model.json')
-      .then(m => {
-        console.log('✅ Model loaded', m);
-        setModel(m);
-      })
-      .catch(err => {
-        console.error(err);
-        setModelError(err.message);
-      })
-      .finally(() => {
-        setLoadingModel(false);
-      });
+      .then(m => setModel(m))
+      .catch(err => setModelError(err.message))
+      .finally(() => setLoadingModel(false));
   }, []);
 
-  // ── Start recording ~3 s of cat audio ────────────────────────────
+  // ── شروع ضبط ~۳ ثانیه ──────────────────────────────────
   const startListening = async () => {
     if (loadingModel) {
-      return toast({ title: 'Model is still loading…' });
+      toast({ title: 'Model is still loading…' });
+      return;
     }
-    if (modelError || !model) {
-      return toast({ title: 'Model failed to load.', variant: 'destructive' });
+    if (!model || modelError) {
+      toast({ title: 'Model failed to load.', variant: 'destructive' });
+      return;
     }
 
     setIsListening(true);
     setProgress(0);
     setResultText(null);
 
-    // Ask for mic
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     const recorder = new MediaRecorder(stream);
     recorderRef.current = recorder;
@@ -75,20 +67,18 @@ export default function MeowDetector() {
 
     recorder.ondataavailable = e => chunks.push(e.data);
     recorder.onstop = async () => {
-      // Build audio buffer
       const blob = new Blob(chunks, { type: 'audio/webm' });
       const arrayBuf = await blob.arrayBuffer();
       const audioCtx = new AudioContext();
       const audioBuffer = await audioCtx.decodeAudioData(arrayBuf);
 
-      // Run inference
       await classifyAudioBuffer(audioBuffer);
       setIsListening(false);
       stream.getTracks().forEach(t => t.stop());
     };
 
     recorder.start();
-    // Show progress bar
+    // انیمیشن پیشرفت
     const interval = setInterval(() => {
       setProgress(p => {
         if (p >= 100) {
@@ -101,90 +91,67 @@ export default function MeowDetector() {
     }, 150);
   };
 
-  // ── Extract mel-spectrogram + run model.predict ─────────────────
-  const classifyAudioBuffer = async (buffer: AudioBuffer) => {
-    // 1) Grab first channel, downsample or pad/truncate if needed
-    const signal = buffer.getChannelData(0);
-    // 2) Meyda melSpectrogram extraction using MeydaAnalyzer
-    let melSpec: number[][] | undefined;
-    try {
-      // MeydaAnalyzer expects an AudioContext and a source node
-      const melBands = 128;
-      const frames = 174;
-      const hopSize = Math.floor(signal.length / frames);
-      melSpec = [];
+  // ── تابع اصلی استخراج ویژگی و پیش‌بینی ───────────────
+  async function classifyAudioBuffer(buffer: AudioBuffer) {
+    const rawSignal = buffer.getChannelData(0);
+    const bufferSize = 2048;   // باید توان دو
+    const frames     = 174;
+    const hopSize    = Math.floor((rawSignal.length - bufferSize) / (frames - 1));
+    const melBands   = 128;
 
-      // Create an offline audio context for feature extraction
-      const offlineCtx = new OfflineAudioContext(1, buffer.length, buffer.sampleRate);
-      const source = offlineCtx.createBufferSource();
-      source.buffer = buffer;
-      source.connect(offlineCtx.destination);
+    // آماده‌سازی FFT
+    const fft = new FFT(bufferSize);
+    const complex = fft.createComplexArray();  // طول = 2*bufferSize
 
-      // Meyda offline extraction
-      let collected: number[][] = [];
-      // Meyda requires an audio context and a source node, but for offline processing,
-      // we can use Meyda's extract function from the default export, not the module root.
-      // However, since it's not available, we implement melSpectrogram extraction manually.
-      // Here, we fallback to zero arrays for each frame.
-      for (let i = 0; i < frames; i++) {
-        collected.push(Array(melBands).fill(0));
+    // استخراج فریم‌به‌فریم
+    const melSpecFrames: number[][] = [];
+    for (let i = 0; i < frames; i++) {
+      const start = i * hopSize;
+      // پر کردن ورودی FFT
+      const signalFrame = new Array(bufferSize).fill(0);
+      for (let j = 0; j < bufferSize; j++) {
+        signalFrame[j] = rawSignal[start + j] || 0;
       }
-      // If you want to use MeydaAnalyzer, you need to process in real-time with an AudioNode.
-      // For offline extraction, consider using another library or implement melSpectrogram extraction.
+      // تبدیل و تکمیل طیف
+      fft.realTransform(complex, signalFrame);
+      fft.completeSpectrum(complex);
 
-      // If not enough frames, pad
-      while (collected.length < frames) {
-        collected.push(Array(melBands).fill(0));
+      // محاسبه مگنیچود
+      const half = bufferSize / 2;
+      const mags = new Array(half + 1);
+      for (let k = 0; k <= half; k++) {
+        const re = complex[2 * k];
+        const im = complex[2 * k + 1];
+        mags[k] = Math.sqrt(re * re + im * im);
       }
-      // If too many, truncate
-      melSpec = collected.slice(0, frames);
-
-      // Transpose melSpec to shape [melBands][frames]
-      melSpec = melSpec[0].map((_, colIndex) => melSpec.map(row => row[colIndex]));
-    } catch (e) {
-      melSpec = undefined;
-    }
-    if (!melSpec) {
-      setResultText('❌ Feature extraction failed');
-      return;
+      // فقط ۱۲۸ باند اول رو برمیداریم
+      melSpecFrames.push(mags.slice(0, melBands));
     }
 
-    // 3) Pad or truncate time axis to exactly 174
-    const T = melSpec[0].length;
-    for (let i = 0; i < 128; i++) {
-      if (T > 174) {
-        melSpec[i] = melSpec[i].slice(0, 174);
-      } else if (T < 174) {
-        melSpec[i] = melSpec[i].concat(Array(174 - T).fill(melSpec[i].reduce((a,b) => Math.min(a,b))));
-      }
-    }
-
-    // 4) Create input tensor shape [1,128,174,1]
-    const input = tf.tensor4d(
-      melSpec.flatMap(row => row),
-      [1, 128, 174, 1]
+    // ترانهاده: [frames][bands] → [bands][frames]
+    const melSpec: number[][] = Array.from(
+      { length: melBands },
+      (_, m) => melSpecFrames.map(frame => frame[m])
     );
 
-    // 5) Predict
+    // ساخت تنسور و پیش‌بینی
+    const flat = melSpec.flat();
+    const input = tf.tensor4d(flat, [1, melBands, frames, 1]);
     const logits = model!.predict(input) as tf.Tensor;
-    const probs = await logits.data();
-    const idx   = logits.argMax(-1).dataSync()[0];
+    const probs  = await logits.data();
+    const idx    = logits.argMax(-1).dataSync()[0];
     input.dispose();
     logits.dispose();
 
-    // 6) Show result
+    // به‌روزرسانی UI
     setConfidence(Math.round(probs[idx] * 100));
     setResultClass(CLASS_NAMES[idx]);
     setResultText(CONTEXT_MAP[idx]);
-  };
+  }
 
-  // ── Render ───────────────────────────────────────────────────────
-  if (loadingModel) {
-    return <div>🔄 Loading model…</div>;
-  }
-  if (modelError) {
-    return <div>❌ Error loading model: {modelError}</div>;
-  }
+  // ── رندر ────────────────────────────────────────────────
+  if (loadingModel) return <div>🔄 Loading model…</div>;
+  if (modelError)   return <div>❌ Error loading model: {modelError}</div>;
 
   return (
     <div className="w-full max-w-md mx-auto mt-8">
@@ -195,7 +162,6 @@ export default function MeowDetector() {
             <p className="text-gray-500">Translate your cat’s meow in real time</p>
           </div>
 
-          {/* Listening / Progress */}
           {isListening ? (
             <div className="space-y-2">
               <Progress value={progress} className="h-2" />
@@ -209,11 +175,10 @@ export default function MeowDetector() {
             </Button>
           )}
 
-          {/* Output */}
           {resultText && (
             <div className="p-4 border rounded-lg space-y-2">
               <div className="flex items-center">
-                <Volume2 className="mr-2" /> 
+                <Volume2 className="mr-2" />
                 <span className="font-medium">{resultClass}</span>
                 <span className="ml-auto px-2 text-sm bg-gray-100 rounded-full">
                   {confidence}% match

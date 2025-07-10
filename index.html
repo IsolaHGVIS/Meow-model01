@@ -1,27 +1,33 @@
-
 <!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>MeowMatic - Cat Meow Translator</title>
-    <meta name="description" content="Translate your cat's meows with MeowMatic" />
-    <meta name="author" content="MeowMatic" />
 
-    <meta property="og:title" content="MeowMatic - Cat Meow Translator" />
-    <meta property="og:description" content="Understand what your cat is saying with our AI meow translator" />
-    <meta property="og:type" content="website" />
-    <meta property="og:image" content="https://lovable.dev/opengraph-image-p98pqg.png" />
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MeowMatic - Cat Meow Translator</title>
+  <meta name="description" content="Translate your cat's meows with MeowMatic" />
+  <meta name="author" content="MeowMatic" />
 
-    <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:site" content="@lovable_dev" />
-    <meta name="twitter:image" content="https://lovable.dev/opengraph-image-p98pqg.png" />
-  </head>
+  <meta property="og:title" content="MeowMatic - Cat Meow Translator" />
+  <meta property="og:description" content="Understand what your cat is saying with our AI meow translator" />
+  <meta property="og:type" content="website" />
+  <meta property="og:image" content="https://lovable.dev/opengraph-image-p98pqg.png" />
 
-  <body>
-    <div id="root"></div>
-    <!-- IMPORTANT: DO NOT REMOVE THIS SCRIPT TAG OR THIS VERY COMMENT! -->
-    <script src="https://cdn.gpteng.co/gptengineer.js" type="module"></script>
-    <script type="module" src="/src/main.tsx"></script>
-  </body>
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:site" content="@lovable_dev" />
+  <meta name="twitter:image" content="https://lovable.dev/opengraph-image-p98pqg.png" />
+</head>
+
+<body>
+  <div id="root"></div>
+  <!-- ابتدا Meyda -->
+  <script src="https://unpkg.com/meyda/dist/web/meyda.min.js"></script>
+  <script>
+    // بلافاصله بعد از load شدن کتابخانه:
+    window.Meyda.featureExtractors = window.Meyda._extractors;
+  </script>
+  <!-- IMPORTANT: DO NOT REMOVE THIS SCRIPT TAG OR THIS VERY COMMENT! -->
+  <script src="https://cdn.gpteng.co/gptengineer.js" type="module"></script>
+  <script type="module" src="/src/main.tsx"></script>
+</body>
 </html>
