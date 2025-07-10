@@ -23,7 +23,7 @@ const CLASS_NAMES = [
 export default function MeowDetector() {
   const { toast } = useToast();
 
-  // ── مدل TF-JS ─────────────────────────────────────────
+  // ── model TF-JS ─────────────────────────────────────────
   const [model, setModel] = useState<tf.LayersModel | null>(null);
   const [loadingModel, setLoadingModel] = useState(true);
   const [modelError, setModelError] = useState<string | null>(null);
@@ -37,7 +37,7 @@ export default function MeowDetector() {
 
   const recorderRef = useRef<MediaRecorder>();
 
-  // ── بارگذاری مدل در هنگام mount ────────────────────────
+  // ── Loading model on mount ────────────────────────
   useEffect(() => {
     tf.loadLayersModel('/model/model.json')
       .then(m => setModel(m))
@@ -45,7 +45,7 @@ export default function MeowDetector() {
       .finally(() => setLoadingModel(false));
   }, []);
 
-  // ── شروع ضبط ~۳ ثانیه ──────────────────────────────────
+  // ── Starting recording after ~3 seconds ──────────────────────────────────
   const startListening = async () => {
     if (loadingModel) {
       toast({ title: 'Model is still loading…' });
@@ -78,7 +78,7 @@ export default function MeowDetector() {
     };
 
     recorder.start();
-    // انیمیشن پیشرفت
+    // Progress animation
     const interval = setInterval(() => {
       setProgress(p => {
         if (p >= 100) {
@@ -91,32 +91,32 @@ export default function MeowDetector() {
     }, 150);
   };
 
-  // ── تابع اصلی استخراج ویژگی و پیش‌بینی ───────────────
+  // ── Main feature extraction and prediction function ───────────────
   async function classifyAudioBuffer(buffer: AudioBuffer) {
     const rawSignal = buffer.getChannelData(0);
-    const bufferSize = 2048;   // باید توان دو
+    const bufferSize = 2048;   // Must be power of two
     const frames     = 174;
     const hopSize    = Math.floor((rawSignal.length - bufferSize) / (frames - 1));
     const melBands   = 128;
 
-    // آماده‌سازی FFT
+    // Preparing FFT
     const fft = new FFT(bufferSize);
-    const complex = fft.createComplexArray();  // طول = 2*bufferSize
+    const complex = fft.createComplexArray();  // Length = 2*bufferSize
 
-    // استخراج فریم‌به‌فریم
+    // Frame-by-frame extraction
     const melSpecFrames: number[][] = [];
     for (let i = 0; i < frames; i++) {
       const start = i * hopSize;
-      // پر کردن ورودی FFT
+      // Filling FFT input
       const signalFrame = new Array(bufferSize).fill(0);
       for (let j = 0; j < bufferSize; j++) {
         signalFrame[j] = rawSignal[start + j] || 0;
       }
-      // تبدیل و تکمیل طیف
+      // Transforming and padding spectrum
       fft.realTransform(complex, signalFrame);
       fft.completeSpectrum(complex);
 
-      // محاسبه مگنیچود
+      // Calculating magnitudes
       const half = bufferSize / 2;
       const mags = new Array(half + 1);
       for (let k = 0; k <= half; k++) {
@@ -124,17 +124,17 @@ export default function MeowDetector() {
         const im = complex[2 * k + 1];
         mags[k] = Math.sqrt(re * re + im * im);
       }
-      // فقط ۱۲۸ باند اول رو برمیداریم
+      // just 128 mel bands
       melSpecFrames.push(mags.slice(0, melBands));
     }
 
-    // ترانهاده: [frames][bands] → [bands][frames]
+    // Transpose: [frames][bands] → [bands][frames]
     const melSpec: number[][] = Array.from(
       { length: melBands },
       (_, m) => melSpecFrames.map(frame => frame[m])
     );
 
-    // ساخت تنسور و پیش‌بینی
+    // Creating tensor and predicting
     const flat = melSpec.flat();
     const input = tf.tensor4d(flat, [1, melBands, frames, 1]);
     const logits = model!.predict(input) as tf.Tensor;
@@ -143,13 +143,13 @@ export default function MeowDetector() {
     input.dispose();
     logits.dispose();
 
-    // به‌روزرسانی UI
+    // Updating UI
     setConfidence(Math.round(probs[idx] * 100));
     setResultClass(CLASS_NAMES[idx]);
     setResultText(CONTEXT_MAP[idx]);
   }
 
-  // ── رندر ────────────────────────────────────────────────
+  // ── Rendering ────────────────────────────────────────────────
   if (loadingModel) return <div>🔄 Loading model…</div>;
   if (modelError)   return <div>❌ Error loading model: {modelError}</div>;
 
