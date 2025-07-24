@@ -1,18 +1,27 @@
-# Welcome to your Lovable project
+#Cat Meow Classifier
 
-## Project info
+1. Dataset—
+*Original Dataset is from:https://www.kaggle.com/datasets/andrewmvd/cat-meow-classification?resource=download&select=dataset
+440 audio recordings belonging to 3 classes
+  • B = brushing; 
+	•	F = waiting for food; 
+	•	I =  isolation in an unfamiliar environment)
 
-**URL**: https://lovable.dev/projects/1eaaa091-a9d8-40c9-a2c3-ed601c6aa066
+>>> July25 Added Dataset :
+    80 From 50 Environment Database:https://github.com/karolpiczak/ESC-50
+       • E = Environment Sound
+    68 From Youtube video
+	     •	H = Hising Threatened
+	     •	G = Growl Angry
+      	•	S = Super satisfied
 
-## How can I edit this code?
+2. Features
+Naming convention for files -> C_NNNNN_BB_SS_OOOOO_RXX, where:
+C = emission context (values: B = brushing; F = waiting for food; I: isolation in an unfamiliar environment); NNNNN = cat’s unique ID; BB = breed (values: MC = Maine Coon; EU: European Shorthair); SS = sex (values: FI = female, intact; FN: female, neutered; MI: male, intact; MN: male, neutered); OOOOO = cat owner’s unique ID; R = recording session (values: 1, 2 or 3) XX = vocalization counter (values: 01..99)
 
-There are several ways of editing your application.
+3. Model:
+   Trained by Tensorflow. Accuracy: 0.8175 (July 25)
 
-**Use Lovable**
-
-Simply visit the [Lovable Project](https://lovable.dev/projects/1eaaa091-a9d8-40c9-a2c3-ed601c6aa066) and start prompting.
-
-Changes made via Lovable will be committed automatically to this repo.
 
 **Use your preferred IDE**
 
