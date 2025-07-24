@@ -1,7 +1,7 @@
 #Cat Meow Classifier
 
 1. Dataset—
-*Original Dataset is from:https://www.kaggle.com/datasets/andrewmvd/cat-meow-classification?resource=download&select=dataset
+>>>Original Dataset is from:https://www.kaggle.com/datasets/andrewmvd/cat-meow-classification?resource=download&select=dataset
 440 audio recordings belonging to 3 classes
   • B = brushing; 
 	•	F = waiting for food; 
@@ -13,7 +13,7 @@
     68 From Youtube video
 	     •	H = Hising Threatened
 	     •	G = Growl Angry
-      	•	S = Super satisfied
+      	     •	S = Super satisfied
 
 2. Features
 Naming convention for files -> C_NNNNN_BB_SS_OOOOO_RXX, where:
