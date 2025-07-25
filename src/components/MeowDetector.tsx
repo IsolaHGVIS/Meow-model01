@@ -1,24 +1,13 @@
 // src/components/MeowDetector.tsx
 import { useState, useEffect, useRef } from 'react';
 import * as tf from '@tensorflow/tfjs';
-import FFT from 'fft.js';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
 import { Mic, Volume2 } from 'lucide-react';
 import { useToast } from '@/components/ui/use-toast';
+import { CLASS_NAMES, CONTEXT_MAP, processAudioBuffer } from './AudioUtils';
 
-const CONTEXT_MAP: Record<number, string> = {
-  0: "I'm hungry! Feed me now, please!",
-  1: "I'm alone. Where are you?",
-  2: 'Pet me! I need attention!'
-};
-
-const CLASS_NAMES = [
-  "Hungry",
-  "Isolation",
-  "Attention"
-];
 
 export default function MeowDetector() {
   const { toast } = useToast();
@@ -89,65 +78,57 @@ export default function MeowDetector() {
         return p + 5;
       });
     }, 150);
+    
   };
 
   // ── Main feature extraction and prediction function ───────────────
-  async function classifyAudioBuffer(buffer: AudioBuffer) {
-    const rawSignal = buffer.getChannelData(0);
-    const bufferSize = 2048;   // Must be power of two
-    const frames     = 174;
-    const hopSize    = Math.floor((rawSignal.length - bufferSize) / (frames - 1));
-    const melBands   = 128;
+// First, add the debugText state at the component level with other states
+const [debugText, setDebugText] = useState<string | null>(null);
 
-    // Preparing FFT
-    const fft = new FFT(bufferSize);
-    const complex = fft.createComplexArray();  // Length = 2*bufferSize
+// Simplified classifyAudioBuffer function
+async function classifyAudioBuffer(buffer: AudioBuffer) {
+  if (!model) return;
 
-    // Frame-by-frame extraction
-    const melSpecFrames: number[][] = [];
-    for (let i = 0; i < frames; i++) {
-      const start = i * hopSize;
-      // Filling FFT input
-      const signalFrame = new Array(bufferSize).fill(0);
-      for (let j = 0; j < bufferSize; j++) {
-        signalFrame[j] = rawSignal[start + j] || 0;
-      }
-      // Transforming and padding spectrum
-      fft.realTransform(complex, signalFrame);
-      fft.completeSpectrum(complex);
+  try {
+    const result = await processAudioBuffer(buffer, model);
+    
+    // Update UI states
+    setConfidence(result.confidence);
+    setResultClass(result.class);
+    setResultText(result.text);
 
-      // Calculating magnitudes
-      const half = bufferSize / 2;
-      const mags = new Array(half + 1);
-      for (let k = 0; k <= half; k++) {
-        const re = complex[2 * k];
-        const im = complex[2 * k + 1];
-        mags[k] = Math.sqrt(re * re + im * im);
-      }
-      // just 128 mel bands
-      melSpecFrames.push(mags.slice(0, melBands));
-    }
+    // Get the class index from the result
+    const classIndex = CLASS_NAMES.indexOf(result.class);
+    
+    // Create debug info with probabilities
+    const probabilities = result.probabilities || [];
+    const debugLines = CLASS_NAMES.map((name, i) => {
+      return `Class ${i} (${name}): ${(probabilities[i] * 100).toFixed(1)}%`;
+    });
 
-    // Transpose: [frames][bands] → [bands][frames]
-    const melSpec: number[][] = Array.from(
-      { length: melBands },
-      (_, m) => melSpecFrames.map(frame => frame[m])
-    );
+    const audioDuration = (buffer.length / buffer.sampleRate).toFixed(1);
+    const debugInfo = [
+      `🐱 Cat Sound Analysis:`,
+      `Detected Context: ${CONTEXT_MAP[classIndex]}`,
+      `Confidence: ${result.confidence}%`,
+      `Audio Duration: ${audioDuration} seconds`,
+      '',
+      `Debug Info:`,
+      ...debugLines,
+    ].join('\n');
 
-    // Creating tensor and predicting
-    const flat = melSpec.flat();
-    const input = tf.tensor4d(flat, [1, melBands, frames, 1]);
-    const logits = model!.predict(input) as tf.Tensor;
-    const probs  = await logits.data();
-    const idx    = logits.argMax(-1).dataSync()[0];
-    input.dispose();
-    logits.dispose();
+    console.log(debugInfo);
+    setDebugText(debugInfo);
 
-    // Updating UI
-    setConfidence(Math.round(probs[idx] * 100));
-    setResultClass(CLASS_NAMES[idx]);
-    setResultText(CONTEXT_MAP[idx]);
+  } catch (error) {
+    console.error('Classification error:', error);
+    toast({
+      title: 'Classification failed',
+      description: 'Please try recording again',
+      variant: 'destructive'
+    });
   }
+}
 
   // ── Rendering ────────────────────────────────────────────────
   if (loadingModel) return <div>🔄 Loading model…</div>;
@@ -180,13 +161,25 @@ export default function MeowDetector() {
               <div className="flex items-center">
                 <Volume2 className="mr-2" />
                 <span className="font-medium">{resultClass}</span>
-                <span className="ml-auto px-2 text-sm bg-gray-100 rounded-full">
+                <span className="ml-auto px-2 text-sm bg-gray-100 rounded-full text-black">
                   {confidence}% match
                 </span>
               </div>
               <p>{resultText}</p>
             </div>
           )}
+
+          {/* Add debug info display here */}
+          {debugText && (
+            <div className="p-4 border rounded-lg space-y-2 bg-gray-800"> {/* Same style as result card */}
+              <div className="flex items-center">
+                 <span className="font-medium text-white">Debug Information</span>
+              </div>
+             <pre className="text-sm text-white whitespace-pre-wrap font-mono">
+             {debugText}
+            </pre>
+           </div>
+           )}
         </CardContent>
       </Card>
     </div>
