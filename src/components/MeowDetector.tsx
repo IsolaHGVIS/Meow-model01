@@ -67,6 +67,12 @@ export default function MeowDetector() {
     };
 
     recorder.start();
+
+    // Progress animation for 3 seconds
+  const recordingDuration = 3000; // 3 seconds
+  const updateInterval = 50; // Update every 50ms
+  const progressIncrement = (100 * updateInterval) / recordingDuration;
+
     // Progress animation
     const interval = setInterval(() => {
       setProgress(p => {
@@ -75,9 +81,9 @@ export default function MeowDetector() {
           clearInterval(interval);
           return 100;
         }
-        return p + 5;
+        return p + progressIncrement;
       });
-    }, 150);
+    }, updateInterval);
     
   };
 
