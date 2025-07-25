@@ -5,20 +5,20 @@ import Meyda from 'meyda';
 
 export const CLASS_NAMES = [
   "Enviroment",
-  "Growl",
+  "Attention",
   "Hissing",
   "Satistfied",
-  "Attention",
+  "Growl",
   "Isolation",
   "Hungry"
 ];
 
 export const CONTEXT_MAP: Record<number, string> = {
   0: "Environment Sounds",
-  1: "I'm angry. Get away from me!",
+  1: "Pet me! I want to play with you",
   2: "I feel threatened and scared. Leave me alone!",
   3: "I am super satisfied! I love you!",
-  4: 'Pet me! I want to play with you',
+  4: "I'm angry. Get away from me!",
   5: "I feel lonely. Where are you?",
   6: "I'm hungry! Feed me now, please!"
 };
