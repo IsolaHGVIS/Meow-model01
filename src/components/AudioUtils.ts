@@ -1,6 +1,7 @@
 // src/components/AudioUtils.ts
 import * as tf from '@tensorflow/tfjs';
 import FFT from 'fft.js';
+import Meyda from 'meyda';
 
 export const CLASS_NAMES = [
   "Enviroment",
@@ -30,76 +31,152 @@ export interface AudioClassificationResult {
   debugInfo?: string;
 }
 
+// Create Mel filterbank matrix
+function createMelFilterbank(
+  sampleRate: number,
+  fftSize: number,
+  melBands: number,
+  fMin = 0,
+  fMax = 8000
+): number[][] {
+  const freqToMel = (f: number) => 2595 * Math.log10(1 + f / 700);
+  const melToFreq = (m: number) => 700 * (10 ** (m / 2595) - 1);
+
+  const melMin = freqToMel(fMin);
+  const melMax = freqToMel(fMax);
+
+  const melPoints = Array.from({ length: melBands + 2 }, (_, i) =>
+    melMin + (i * (melMax - melMin)) / (melBands + 1)
+  );
+  const hzPoints = melPoints.map(melToFreq);
+
+  const binFrequencies = Array.from({ length: fftSize / 2 + 1 }, (_, i) =>
+    (i * sampleRate) / fftSize
+  );
+
+  const filterbank: number[][] = [];
+
+  for (let m = 0; m < melBands; m++) {
+    const fLeft = hzPoints[m];
+    const fCenter = hzPoints[m + 1];
+    const fRight = hzPoints[m + 2];
+
+    const filter: number[] = [];
+
+    for (let k = 0; k < binFrequencies.length; k++) {
+      const freq = binFrequencies[k];
+      let weight = 0;
+      if (freq >= fLeft && freq <= fCenter) {
+        weight = (freq - fLeft) / (fCenter - fLeft);
+      } else if (freq >= fCenter && freq <= fRight) {
+        weight = (fRight - freq) / (fRight - fCenter);
+      }
+      filter.push(weight);
+    }
+
+    filterbank.push(filter);
+  }
+
+  return filterbank;
+}
+
 export async function processAudioBuffer(
   buffer: AudioBuffer,
   model: tf.LayersModel
 ): Promise<AudioClassificationResult> {
-  const rawSignal = buffer.getChannelData(0);
-  
-  // Check audio level
-  const audioThreshold = 0.005;
-  const signalStrength = rawSignal.reduce((sum, value) => sum + Math.abs(value), 0) / rawSignal.length;
-  
-  console.log('Signal strength:', signalStrength);
+  const signal = buffer.getChannelData(0);
 
- if (signalStrength < audioThreshold) {
+  const audioThreshold = 0.005;
+  const strength = signal.reduce((acc, x) => acc + Math.abs(x), 0) / signal.length;
+  console.log('Signal strength:', strength);
+  if (strength < audioThreshold) {
     return {
       class: CLASS_NAMES[0],
       text: CONTEXT_MAP[0],
       confidence: 100,
-      probabilities: new Array(CLASS_NAMES.length).fill(0).map((_, i) => i === 0 ? 1 : 0),
-      debugInfo: "Low audio level detected"
+      probabilities: CLASS_NAMES.map((_, i) => (i === 0 ? 1 : 0)),
+      debugInfo: 'Low audio level detected'
     };
   }
 
-    // Prepare mel spectrogram
-  const bufferSize = 2048;
-  const frames = 174;
-  const hopSize = Math.floor((rawSignal.length - bufferSize) / (frames - 1));
+  // === Parameters ===
   const melBands = 128;
+  const frameSize = 2048;
+  const hopSize = 512;
+  const targetFrames = 174;
+  const fft = new FFT(frameSize);
+  const fftOutput = new Float32Array(frameSize * 2);
+  const melFilterbank = createMelFilterbank(buffer.sampleRate, frameSize, melBands);
 
-  /// Preparing FFT
-  const fft = new FFT(bufferSize);
-  const complex = fft.createComplexArray();
+  // === Pre-emphasis ===
+  const preEmphasized = signal.map((v, i) => v - 0.97 * (signal[i - 1] || 0));
 
-  // Frame-by-frame extraction
-  const melSpecFrames: number[][] = [];
-  for (let i = 0; i < frames; i++) {
-    const start = i * hopSize;
-    const signalFrame = new Array(bufferSize).fill(0);
-    for (let j = 0; j < bufferSize; j++) {
-      signalFrame[j] = rawSignal[start + j] || 0;
+  // === Framing & FFT ===
+  const melSpectrogram: number[][] = [];
+
+  for (let start = 0; start + frameSize <= preEmphasized.length; start += hopSize) {
+    const frame = preEmphasized.slice(start, start + frameSize);
+
+    // Apply Hamming window
+    for (let i = 0; i < frame.length; i++) {
+      frame[i] *= 0.54 - 0.46 * Math.cos((2 * Math.PI * i) / (frameSize - 1));
     }
-    
-    fft.realTransform(complex, signalFrame);
-    fft.completeSpectrum(complex);
 
-    const half = bufferSize / 2;
-    const mags = new Array(half + 1);
-    for (let k = 0; k <= half; k++) {
-      const re = complex[2 * k];
-      const im = complex[2 * k + 1];
-      mags[k] = Math.sqrt(re * re + im * im);
+    const real = new Float32Array(frameSize);
+    const imag = new Float32Array(frameSize);
+    frame.forEach((v, i) => (real[i] = v));
+
+    fft.realTransform(fftOutput, real);
+    fft.completeSpectrum(fftOutput);
+
+    // Power spectrum
+    const powerSpectrum = [];
+    for (let i = 0; i <= frameSize / 2; i++) {
+      const re = fftOutput[2 * i];
+      const im = fftOutput[2 * i + 1];
+      powerSpectrum.push(re * re + im * im);
     }
-    melSpecFrames.push(mags.slice(0, melBands));
+
+    // Apply mel filterbank
+    const melBandsFrame = melFilterbank.map(filter =>
+      filter.reduce((sum, w, i) => sum + w * powerSpectrum[i], 0)
+    );
+    melSpectrogram.push(melBandsFrame);
   }
 
-  // Transpose: [frames][bands] → [bands][frames]
-  const melSpec = Array.from(
-    { length: melBands },
-    (_, m) => melSpecFrames.map(frame => frame[m])
+  // Pad or crop to fixed frame count
+  while (melSpectrogram.length < targetFrames) {
+    melSpectrogram.push(new Array(melBands).fill(0));
+  }
+  melSpectrogram.length = targetFrames;
+
+  // Transpose: [melBands][frames]
+  const melSpec = Array.from({ length: melBands }, (_, m) =>
+    melSpectrogram.map(frame => frame[m])
   );
 
-  // Creating tensor and predicting
+  // === Log-mel scaling ===
+  for (let i = 0; i < melBands; i++) {
+    for (let j = 0; j < targetFrames; j++) {
+      melSpec[i][j] = Math.log(melSpec[i][j] + 1e-6);
+    }
+  }
+
+  // === Min-max normalize ===
   const flat = melSpec.flat();
-  const input = tf.tensor4d(flat, [1, melBands, frames, 1]);
+  const min = Math.min(...flat);
+  const max = Math.max(...flat);
+  const normSpec = melSpec.map(row =>
+    row.map(v => (v - min) / (max - min + 1e-6))
+  );
+
+  // === Tensor ===
+  const input = tf.tensor4d(normSpec.flat(), [1, melBands, targetFrames, 1]);
   const logits = model.predict(input) as tf.Tensor;
-  const probs = await logits.data();
-  const idx = logits.argMax(-1).dataSync()[0];
-  input.dispose(); //previous code
-  logits.dispose(); //previous code
-    
-  // Create debug info
+  const probs = await tf.softmax(logits).data();
+  const idx = probs.indexOf(Math.max(...probs));
+
+ // Create debug info
   const debugLines = CLASS_NAMES.map((name, i) => {
     return `Class ${i} (${name}): ${(probs[i] * 100).toFixed(1)}%`;
   });
@@ -113,7 +190,7 @@ export async function processAudioBuffer(
     ...debugLines,
   ].join('\n');
 
-  // Cleanup
+
   input.dispose();
   logits.dispose();
 
@@ -121,7 +198,14 @@ export async function processAudioBuffer(
     class: CLASS_NAMES[idx],
     text: CONTEXT_MAP[idx],
     confidence: Math.round(probs[idx] * 100),
-    probabilities: Array.from(probs)
-      //debugInfo: debugInfo
+    probabilities: Array.from(probs),
+    debugInfo
   };
+
+    // Cleanup
+  input.dispose();
+  logits.dispose();
 }
+ 
+
+
